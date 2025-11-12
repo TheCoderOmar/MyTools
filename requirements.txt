@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+yt-dlp
+mutagen
+pillow
+requests
+python-multipart
+xmltodict
