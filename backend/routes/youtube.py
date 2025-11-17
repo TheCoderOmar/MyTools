@@ -6,7 +6,8 @@ from services.youtube_service import (
     search_youtube_videos,
     get_video_information,
     download_youtube_video,
-    get_thumbnail_proxy
+    get_thumbnail_proxy,
+    get_video_formats
 )
 
 router = APIRouter()
@@ -16,6 +17,10 @@ class SearchRequest(BaseModel):
 
 class DownloadRequest(BaseModel):
     url: str
+
+class VideoDownloadRequest(BaseModel):
+    url: str
+    format_id: str
 
 class SearchResult(BaseModel):
     id: str
@@ -33,6 +38,13 @@ class VideoInfoResponse(BaseModel):
     thumbnail: str
     url: str
 
+class VideoFormat(BaseModel):
+    format_id: str
+    resolution: str
+    ext: str
+    filesize: str
+    fps: int
+
 @router.post("/search", response_model=List[SearchResult])
 async def search(request: SearchRequest):
     """Search YouTube and return top 6 results"""
@@ -49,6 +61,14 @@ async def video_info(url: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/video-formats")
+async def video_formats(url: str):
+    """Get available video formats/qualities"""
+    try:
+        return get_video_formats(url)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.get("/thumbnail/{video_id}")
 async def thumbnail(video_id: str):
     """Proxy YouTube thumbnails to avoid CORS issues"""
@@ -62,5 +82,14 @@ async def download(request: DownloadRequest):
     """Download video as MP3 with metadata"""
     try:
         return download_youtube_video(request.url)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/download-video")
+async def download_video(request: VideoDownloadRequest):
+    """Download video with selected quality"""
+    try:
+        from services.youtube_service import download_youtube_video_quality
+        return download_youtube_video_quality(request.url, request.format_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

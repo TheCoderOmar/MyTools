@@ -23,14 +23,22 @@ def search_youtube_videos(query: str):
         results = []
         for video in search_results['entries']:
             duration_sec = int(video.get('duration', 0)) if video.get('duration') else 0
-            minutes = duration_sec // 60
+            
+            # Format duration properly (handle hours)
+            hours = duration_sec // 3600
+            minutes = (duration_sec % 3600) // 60
             seconds = duration_sec % 60
+            
+            if hours > 0:
+                duration_str = f"{hours}:{minutes:02d}:{seconds:02d}"
+            else:
+                duration_str = f"{minutes}:{seconds:02d}"
             
             results.append({
                 'id': video['id'],
                 'title': video.get('title', 'Unknown'),
                 'channel': video.get('channel', 'Unknown'),
-                'duration': f"{minutes}:{seconds:02d}",
+                'duration': duration_str,
                 'thumbnail': f"http://localhost:8000/api/youtube/thumbnail/{video['id']}",
                 'url': f"https://youtube.com/watch?v={video['id']}"
             })
@@ -49,8 +57,16 @@ def get_video_information(url: str):
         info = ydl.extract_info(url, download=False)
         
         duration_sec = int(info.get('duration', 0)) if info.get('duration') else 0
-        minutes = duration_sec // 60
+        
+        # Format duration properly (handle hours)
+        hours = duration_sec // 3600
+        minutes = (duration_sec % 3600) // 60
         seconds = duration_sec % 60
+        
+        if hours > 0:
+            duration_str = f"{hours}:{minutes:02d}:{seconds:02d}"
+        else:
+            duration_str = f"{minutes}:{seconds:02d}"
         
         video_id = info.get('id', '')
         
@@ -58,10 +74,50 @@ def get_video_information(url: str):
             'id': video_id,
             'title': info.get('title', 'Unknown'),
             'channel': info.get('channel', info.get('uploader', 'Unknown')),
-            'duration': f"{minutes}:{seconds:02d}",
+            'duration': duration_str,
             'thumbnail': f"http://localhost:8000/api/youtube/thumbnail/{video_id}",
             'url': url
         }
+
+def get_video_formats(url: str):
+    """Get available video formats/qualities"""
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': True,
+    }
+    
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+        
+        formats = []
+        seen_resolutions = set()
+        
+        for fmt in info.get('formats', []):
+            # Only include formats with both video and audio, or video-only with good quality
+            if fmt.get('vcodec') != 'none' and fmt.get('height'):
+                resolution = f"{fmt.get('height')}p"
+                
+                # Skip duplicates
+                if resolution in seen_resolutions:
+                    continue
+                    
+                seen_resolutions.add(resolution)
+                
+                filesize = fmt.get('filesize') or fmt.get('filesize_approx', 0)
+                filesize_mb = f"{filesize / (1024 * 1024):.1f} MB" if filesize else "Unknown"
+                
+                formats.append({
+                    'format_id': fmt['format_id'],
+                    'resolution': resolution,
+                    'ext': fmt.get('ext', 'mp4'),
+                    'filesize': filesize_mb,
+                    'fps': fmt.get('fps', 30)
+                })
+        
+        # Sort by resolution (highest first)
+        formats.sort(key=lambda x: int(x['resolution'].replace('p', '')), reverse=True)
+        
+        return formats
 
 def get_thumbnail_proxy(video_id: str):
     """Proxy YouTube thumbnails to avoid CORS issues"""
@@ -161,6 +217,56 @@ def download_youtube_video(url: str):
             media_type='audio/mpeg',
             headers={
                 "Content-Disposition": f'attachment; filename="{safe_title}.mp3"',
+                "Content-Length": str(os.path.getsize(filename)),
+                "Access-Control-Expose-Headers": "Content-Disposition"
+            }
+        )
+    else:
+        raise HTTPException(status_code=500, detail="Download failed")
+
+def download_youtube_video_quality(url: str, format_id: str):
+    """Download video with selected quality"""
+    unique_id = str(uuid.uuid4())[:8]
+    
+    # Format selection: video + best audio
+    format_string = f"{format_id}+bestaudio/best"
+    
+    ydl_opts = {
+        'format': format_string,
+        'outtmpl': f'downloads/{unique_id}_%(title)s.%(ext)s',
+        'merge_output_format': 'mp4',
+        'quiet': True,
+    }
+
+    os.makedirs('downloads', exist_ok=True)
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        title = info.get('title', 'Unknown Title')
+        safe_title = "".join(c if c.isalnum() or c in (' ', '-', '_', '.') else '_' for c in title)
+        safe_title = ' '.join(safe_title.split())
+        
+        # Find the downloaded file
+        filename = None
+        for ext in ['mp4', 'mkv', 'webm']:
+            potential_file = f"downloads/{unique_id}_{title}.{ext}"
+            if os.path.exists(potential_file):
+                filename = potential_file
+                break
+
+    if filename and os.path.exists(filename):
+        def file_iterator():
+            with open(filename, 'rb') as file:
+                chunk_size = 8192
+                while chunk := file.read(chunk_size):
+                    yield chunk
+            os.remove(filename)
+
+        return StreamingResponse(
+            file_iterator(),
+            media_type='video/mp4',
+            headers={
+                "Content-Disposition": f'attachment; filename="{safe_title}.mp4"',
                 "Content-Length": str(os.path.getsize(filename)),
                 "Access-Control-Expose-Headers": "Content-Disposition"
             }
